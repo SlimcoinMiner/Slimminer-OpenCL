@@ -1,0 +1,10 @@
+{
+	"url" : "http://127.0.0.1:41683/",
+	"user" : "rpcuser",
+	"pass" : "rpcpass",
+
+	"algo" : "dcrypt",
+	"threads" : "3",
+
+	"quiet" : true
+}
