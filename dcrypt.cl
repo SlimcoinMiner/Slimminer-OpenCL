@@ -49,14 +49,165 @@ __constant uint k[] = {
 #define g state.s6	
 #define h state.s7
 
-__kernel void search(__global uint* output)
+__kernel void search(__global const uint* data, __global uint*restrict output, uint target)
 {
+	uint nonce = output[get_global_id(0)];  
+	uint w[64];
+
+	uint8 hash = hash0;
+	
+// 1 chunk	
+	uint8 state = hash;
+	((uint16*)w)[0] = ((__global uint16*)data)[0];
+	for (int i = 16; i < 64; i++) {
+		w[i] = w[i-16] + sigma0(w[i-15]) + w[i-7] + sigma1(w[i-2]); 
+	}
+	for (int i = 0; i < 64; i++) {
+		uint t1 = h + Sigma1(e) + Ch(e,f,g) + k[i] + w[i];
+		uint t2 = Sigma0(a) + Maj(a,b,c);
+		h = g; g = f; f = e; e = d+t1; d = c; c = b; b = a; a = t1+t2;
+	}
+	hash += state;
+
+// 2 chunk
+	state = hash;	
+	((uint16*)w)[0] = (uint16)(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+	w[0] = data[16];
+	w[1] = data[17];
+	w[2] = data[18];
+	w[3] = SWAP32(nonce);
+	w[4] = 0x80000000U; // message ending 1 bit
+	w[15] = 640U; // message length in bits
+
+	for (int i = 16; i < 64; i++) {
+		w[i] = w[i-16] + sigma0(w[i-15]) + w[i-7] + sigma1(w[i-2]); 
+	}
+	for (int i = 0; i < 64; i++) {
+		uint t1 = h + Sigma1(e) + Ch(e,f,g) + k[i] + w[i];
+		uint t2 = Sigma0(a) + Maj(a,b,c);
+		h = g; g = f; f = e; e = d+t1; d = c; c = b; b = a; a = t1+t2;
+	}
+	hash += state;
+	hash = (uint8)(SWAP32(hash.s0), SWAP32(hash.s1), SWAP32(hash.s2), SWAP32(hash.s3),
+				 SWAP32(hash.s4), SWAP32(hash.s5), SWAP32(hash.s6), SWAP32(hash.s7));
+
+	uchar index = 0;
+	uchar value; 
+	uchar tmp_array[SHA256_LEN];
+	*((uint16*)tmp_array) = 0xffffffff;
+	uint count = 0;
+	uint8 hash_res = hash0;
+	for (int step = 0; step < STEPS && index < SHA256_LEN - 1; step++) {
+		value = ((uchar*)&hash)[index>>1];
+		index += (index % 2 == 0 ? value >> 4 : value & 0x0F) + 1;
+		
+		value = ((uchar*)&hash)[index>>1];
+		value = (index % 2 == 0 ? value >> 4 : value & 0x0F);
+		value += (value < 10 ? 48 : 87);
+//		tmp_array[SHA256_LEN] = value;
+		
+		uint8 hash_temp = hash0;
+// 1 chunk	
+		state = hash_temp;
+		((uint16*)w)[0] = ((uint16*)tmp_array)[0];
+		for (int i = 16; i < 64; i++) {
+			w[i] = w[i-16] + sigma0(w[i-15]) + w[i-7] + sigma1(w[i-2]); 
+		}
+		for (int i = 0; i < 64; i++) {
+			uint t1 = h + Sigma1(e) + Ch(e,f,g) + k[i] + w[i];
+			uint t2 = Sigma0(a) + Maj(a,b,c);
+			h = g; g = f; f = e; e = d+t1; d = c; c = b; b = a; a = t1+t2;
+		}
+		hash_temp += state;
+	
+	// 2 chunk
+		state = hash_temp;	
+		((uint16*)w)[0] = 0;
+		((uchar*)w)[3] = value;
+		((uchar*)w)[2] = 0x80; // message ending 1 bit
+		w[15] = 520U; // message length in bits
+	
+		for (int i = 16; i < 64; i++) {
+			w[i] = w[i-16] + sigma0(w[i-15]) + w[i-7] + sigma1(w[i-2]); 
+		}
+		for (int i = 0; i < 64; i++) {
+			uint t1 = h + Sigma1(e) + Ch(e,f,g) + k[i] + w[i];
+			uint t2 = Sigma0(a) + Maj(a,b,c);
+			h = g; g = f; f = e; e = d+t1; d = c; c = b; b = a; a = t1+t2;
+		}
+		hash_temp += state;
+		hash_temp = (uint8)(SWAP32(hash_temp.s0), SWAP32(hash_temp.s1), SWAP32(hash_temp.s2), SWAP32(hash_temp.s3),
+					 SWAP32(hash_temp.s4), SWAP32(hash_temp.s5), SWAP32(hash_temp.s6), SWAP32(hash_temp.s7));
+		
+		for (int j = 0; j < SHA256_LEN; j++) {
+			uchar v = ((uchar*)&hash_temp)[j>>1];
+			v = (j % 2 == 0 ? v >> 4 : v & 0x0F);
+			tmp_array[((j >> 2) << 2) + 3 - (j % 4)] = v + (v < 10 ? 48 : 87);
+		}
+		
+//		((uint8*)mixed_hash)[step] = hash_temp;
+		count++;
+		
+		state = hash_res;
+		((uint16*)w)[0] = ((uint16*)tmp_array)[0];
+		for (int i = 16; i < 64; i++) {
+			w[i] = w[i-16] + sigma0(w[i-15]) + w[i-7] + sigma1(w[i-2]); 
+		}
+		for (int i = 0; i < 64; i++) {
+			uint t1 = h + Sigma1(e) + Ch(e,f,g) + k[i] + w[i];
+			uint t2 = Sigma0(a) + Maj(a,b,c);
+			h = g; g = f; f = e; e = d+t1; d = c; c = b; b = a; a = t1+t2;
+		}
+		hash_res += state;
+	}
+  	
+//	if (index == SHA256_LEN - 1 && value == tmp_array[SHA256_LEN - 4]) {
+// 1 chunk	
+	state = hash_res;
+	((uint16*)w)[0] = ((__global uint16*)data)[0];
+	for (int i = 16; i < 64; i++) {
+		w[i] = w[i-16] + sigma0(w[i-15]) + w[i-7] + sigma1(w[i-2]); 
+	}
+	for (int i = 0; i < 64; i++) {
+		uint t1 = h + Sigma1(e) + Ch(e,f,g) + k[i] + w[i];
+		uint t2 = Sigma0(a) + Maj(a,b,c);
+		h = g; g = f; f = e; e = d+t1; d = c; c = b; b = a; a = t1+t2;
+	}
+	hash_res += state;
+
+// 2 chunk
+	state = hash_res;	
+	((uint16*)w)[0] = (uint16)(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+	w[0] = data[16];
+	w[1] = data[17];
+	w[2] = data[18];
+	w[3] = SWAP32(nonce);
+	w[4] = 0x80000000U; // message ending 1 bit
+	w[15] = 640 + 512 * count; // message length in bits
+
+	for (int i = 16; i < 64; i++) {
+		w[i] = w[i-16] + sigma0(w[i-15]) + w[i-7] + sigma1(w[i-2]); 
+	}
+	for (int i = 0; i < 64; i++) {
+		uint t1 = h + Sigma1(e) + Ch(e,f,g) + k[i] + w[i];
+		uint t2 = Sigma0(a) + Maj(a,b,c);
+		h = g; g = f; f = e; e = d+t1; d = c; c = b; b = a; a = t1+t2;
+	}
+	hash_res += state;
+	hash_res = (uint8)(SWAP32(hash_res.s0), SWAP32(hash_res.s1), SWAP32(hash_res.s2), SWAP32(hash_res.s3),
+				 SWAP32(hash_res.s4), SWAP32(hash_res.s5), SWAP32(hash_res.s6), SWAP32(hash_res.s7));
+	
+	if (hash_res.s7 <= target) {
+		int p = output[OUTPUT_COUNTER]++;	
+		output[p] = nonce;
+	}
+//	}
 }
 
-__kernel void hashes(__global const uint* data, __global uint*restrict output)
+__kernel void hashes(__global const uint* data, volatile __global uint* output)
 {
 	uint nonce = get_global_id(0);  
-	uint w[63];
+	uint w[64];
 
 	uint8 hash = hash0;
 	
@@ -103,15 +254,11 @@ __kernel void hashes(__global const uint* data, __global uint*restrict output)
 	}
 
 	if (index == SHA256_LEN - 1) {
-/*	
-		int p = output[OUTPUT_COUNTER]++;	
-		output[p] = nonce;
-//		*(__global uint8*)(&output[9*p+1]) = hash;
-*/
-	
 		index = 0;
-		uchar tmp_array[SHA256_LEN + 1];
+		uchar tmp_array[SHA256_LEN];
+//		uint8 mixed_hash[STEPS];
 		*((ulong8*)tmp_array) = 0xffffffffffffffff;
+//		uint count = 0;
 		for (int step = 0; step < STEPS && index < SHA256_LEN - 1; step++) {
 			value = ((uchar*)&hash)[index>>1];
 			index += (index % 2 == 0 ? value >> 4 : value & 0x0F) + 1;
@@ -119,27 +266,12 @@ __kernel void hashes(__global const uint* data, __global uint*restrict output)
 			value = ((uchar*)&hash)[index>>1];
 			value = (index % 2 == 0 ? value >> 4 : value & 0x0F);
 			value += (value < 10 ? 48 : 87);
-			tmp_array[SHA256_LEN] = value;
+//			tmp_array[SHA256_LEN] = value;
 			
 			uint8 hash_temp = hash0;
 	// 1 chunk	
 			state = hash_temp;
-			w[0] = SWAP32(((uint*)tmp_array)[0]);
-			w[1] = SWAP32(((uint*)tmp_array)[1]);
-			w[2] = SWAP32(((uint*)tmp_array)[2]);
-			w[3] = SWAP32(((uint*)tmp_array)[3]);
-			w[4] = SWAP32(((uint*)tmp_array)[4]);
-			w[5] = SWAP32(((uint*)tmp_array)[5]);
-			w[6] = SWAP32(((uint*)tmp_array)[6]);
-			w[7] = SWAP32(((uint*)tmp_array)[7]);
-			w[8] = SWAP32(((uint*)tmp_array)[8]);
-			w[9] = SWAP32(((uint*)tmp_array)[9]);
-			w[10] = SWAP32(((uint*)tmp_array)[10]);
-			w[11] = SWAP32(((uint*)tmp_array)[11]);
-			w[12] = SWAP32(((uint*)tmp_array)[12]);
-			w[13] = SWAP32(((uint*)tmp_array)[13]);
-			w[14] = SWAP32(((uint*)tmp_array)[14]);
-			w[15] = SWAP32(((uint*)tmp_array)[15]);
+			((uint16*)w)[0] = ((uint16*)tmp_array)[0];
 			for (int i = 16; i < 64; i++) {
 				w[i] = w[i-16] + sigma0(w[i-15]) + w[i-7] + sigma1(w[i-2]); 
 			}
@@ -169,55 +301,19 @@ __kernel void hashes(__global const uint* data, __global uint*restrict output)
 			hash_temp = (uint8)(SWAP32(hash_temp.s0), SWAP32(hash_temp.s1), SWAP32(hash_temp.s2), SWAP32(hash_temp.s3),
 						 SWAP32(hash_temp.s4), SWAP32(hash_temp.s5), SWAP32(hash_temp.s6), SWAP32(hash_temp.s7));
 			
-	//		((uint8*)mixed_hash)[count] = hash_temp;
 			for (int j = 0; j < SHA256_LEN; j++) {
 				uchar v = ((uchar*)&hash_temp)[j>>1];
 				v = (j % 2 == 0 ? v >> 4 : v & 0x0F);
-				tmp_array[j] = v + (v < 10 ? 48 : 87);
+				tmp_array[((j >> 2) << 2) + 3 - (j % 4)] = v + (v < 10 ? 48 : 87);
 			}
+//			((uint8*)mixed_hash)[step] = hash_temp;
+//			count++;
 		}
-//  	
-		if (index == SHA256_LEN - 1 && value == tmp_array[SHA256_LEN - 1]) {
-			int p = output[OUTPUT_COUNTER]++;	
+  	
+		if (index == SHA256_LEN - 1 && value == tmp_array[SHA256_LEN - 4]) {
+			int p = atomic_inc(&output[OUTPUT_COUNTER]);  
+//			int p = output[OUTPUT_COUNTER]++;	
 			output[p] = nonce;
-//			output[2*p+1] = value;
-//			*(__global uint8*)(&output[9*p+1]) = hash;
 		}
 	}	
 }
-/*
-__kernel void hashes_(__global const uint* data, __global uint* output)
-{
-	uint nonce = get_global_id(0);  
-	uint w[63];
-
-	uint8 hash = {0x6a09e667, 0xbb67ae85,	0x3c6ef372,	0xa54ff53a,	0x510e527f,	0x9b05688c,	0x1f83d9ab,	0x5be0cd19};
-	
-// 1 chunk	
-	uint8 state = hash;
-//	((uint16*)w)[0] = (uint16)(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0);
-	w[0] = 0x80000000; // message ending 1 bit
-	w[15] = 0; // message length in bits
-#pragma unroll
-	for (int i = 16; i < 64; i++) {
-		w[i] = w[i-16] + sigma0(w[i-15]) + w[i-7] + sigma1(w[i-2]); 
-	}
-#pragma unroll
-	for (int i = 0; i < 64; i++) {
-		uint t1 = h + Sigma1(e) + Ch(e,f,g) + k[i] + w[i];
-		uint t2 = Sigma0(a) + Maj(a,b,c);
-		h = g; g = f; f = e; e = d+t1; d = c; c = b; b = a; a = t1+t2;
-	}
-	hash += state;
-
-	hash = (uint8)(SWAP32(hash.s0), SWAP32(hash.s1), SWAP32(hash.s2), SWAP32(hash.s3),
-				 SWAP32(hash.s4), SWAP32(hash.s5), SWAP32(hash.s6), SWAP32(hash.s7));
-
-
-	if (get_global_id(0) - get_global_offset(0) == 1) {
-		int p = output[OUTPUT_COUNTER]++;	
-		output[9*p] = nonce;
-		*(__global uint8*)(&output[9*p+1]) = hash;
-	}	
-}
-*/

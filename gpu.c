@@ -351,9 +351,8 @@ int scanhash_dcrypt_opencl(int thr_id, uint32_t *pdata, uint32_t *target, uint32
 		return FAILURE;
 	}
 
-	status = clSetKernelArg(gpu->kernelHashes, 0, sizeof(cl_mem), (void *)&gpu->inputBuffer);
-	status = clSetKernelArg(gpu->kernelHashes, 1, sizeof(cl_mem), (void *)&gpu->outputBuffer);
-//	status = clSetKernelArg(gpu->kernelHashes, 2, sizeof(uint32_t), (void *)&target[7]);
+	status = clSetKernelArg(gpu->kernelHashes, 0, sizeof(cl_mem), &gpu->inputBuffer);
+	status = clSetKernelArg(gpu->kernelHashes, 1, sizeof(cl_mem), &gpu->outputBuffer);
 
 	size_t global_work_size[1] = { max_nonce - first_nonce + 1 };
 	size_t local_work_size[1] = { opt_worksize  };
@@ -371,5 +370,33 @@ int scanhash_dcrypt_opencl(int thr_id, uint32_t *pdata, uint32_t *target, uint32
 		return FAILURE;
 	}
 
-	return SUCCESS;
+	uint32_t results = gpu->output[(gpu->output_size >> 2) - 1];
+//	applog(LOG_INFO, "[GPU%u] Got %u hashes", gpu->threadIndex, results);
+
+	if (results > 0) {
+		global_work_size[0] = results;
+		gpu->output[(gpu->output_size >> 2) - 1] = 0;
+		status = clEnqueueWriteBuffer(gpu->commandQueue, gpu->outputBuffer, CL_TRUE, 0, gpu->output_size, gpu->output, 0, NULL, NULL);
+		if (status != CL_SUCCESS) {
+			applog(LOG_ERR, "[GPU%u] Error clearing result buffer: %d!", gpu->threadIndex, status);
+			return -1;
+		}
+
+		status = clSetKernelArg(gpu->kernelSearch, 0, sizeof(cl_mem), &gpu->inputBuffer);
+		status = clSetKernelArg(gpu->kernelSearch, 1, sizeof(cl_mem), &gpu->outputBuffer);
+		status = clSetKernelArg(gpu->kernelSearch, 2, sizeof(uint32_t), target);
+		status = clEnqueueNDRangeKernel(gpu->commandQueue, gpu->kernelSearch, 1, NULL, global_work_size, local_work_size, 0, NULL, NULL);
+		if (status != CL_SUCCESS) {
+			applog(LOG_ERR, "[%u] GPU error %d: search", thr_id, status);
+			return -1;
+		}
+
+		status = clEnqueueReadBuffer(gpu->commandQueue, gpu->outputBuffer, CL_TRUE, 0, gpu->output_size, gpu->output, 0, NULL, NULL);
+		if (status != CL_SUCCESS) {
+			applog(LOG_ERR, "[GPU%u] Error reading search results: %d!", gpu->threadIndex, status);
+			return -1;
+		}
+	}
+
+	return results;
 }

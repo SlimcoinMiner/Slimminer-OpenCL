@@ -307,7 +307,7 @@ int dcrypt_opt(const uint8_t *data, size_t data_sz, uint8_t *hash_digest, u32int
 // OpenCL version
 int scanhash_dcrypt_gpu(int thr_id, uint32_t *pdata, unsigned char *digest,
 		const uint32_t *ptarget, uint32_t max_nonce, unsigned long *hashes_done,
-		unsigned long *hashes_skipped, GPU *gpu) {
+		unsigned long *hashes_checked, GPU *gpu) {
 	uint32_t block[20], hash[8];
 	uint32_t nNonce = pdata[19] - 1;
 	const uint32_t first_nonce = pdata[19];
@@ -318,8 +318,12 @@ int scanhash_dcrypt_gpu(int thr_id, uint32_t *pdata, unsigned char *digest,
 	memcpy(block, pdata, 80);
 
 	nNonce = max_nonce;
-	scanhash_dcrypt_opencl(thr_id, block, ptarget, first_nonce, max_nonce, gpu);
-	applog(LOG_DEBUG, "GPU: %02d, hashes checked: %u", thr_id, gpu->output[(gpu->output_size >> 2) - 1]);
+	uint32_t hashes = scanhash_dcrypt_opencl(thr_id, block, &target, first_nonce, max_nonce, gpu);
+	uint32_t shares = gpu->output[(gpu->output_size >> 2) - 1];
+	if (shares >= 255) {
+		applog(LOG_ERR, "GPU: %02d, to many shares %u", thr_id, shares);
+		return 0;
+	}
 	int j;
 	for (j = 0; j < 19; j++)
 		block[j] = swab32(block[j]);
@@ -337,6 +341,8 @@ int scanhash_dcrypt_gpu(int thr_id, uint32_t *pdata, unsigned char *digest,
 	 applog(LOG_INFO, "GPU: %02d, found: %u, %s", thr_id, nonce, hash_str);
 	 }
 */
+	*hashes_checked += hashes;
+	applog(LOG_DEBUG, "GPU: %02d, hashes: checked %u, found %u", thr_id, hashes, shares);
 	int i = 0;
 	for (; i < gpu->output[(gpu->output_size >> 2) - 1]; i++) {
 		uint32_t nonce = gpu->output[i];
@@ -350,17 +356,25 @@ int scanhash_dcrypt_gpu(int thr_id, uint32_t *pdata, unsigned char *digest,
 //		int status = dcrypt_opt((u8int*) block, 80, digest, hash, new_hash);
 		int status = 1;
 		dcrypt((u8int*) block, 80, digest, hash);
+		applog(LOG_DEBUG,
+				"GPU: %02d, share found: %u, %08x%08x%08x%08x%08x%08x%08x%08x",
+				thr_id, nonce, hash[7], hash[6], hash[5], hash[4], hash[3],
+				hash[2], hash[1], hash[0]);
 		if (status > 0) {
-			*hashes_skipped += 1;
 			//hash[7] <= Htarg just compares the first 32 bits of the hash with the target
 			// full_test fully compares the entire hash with the entire target
 		    if(hash[7] <= target) {
 				applog(LOG_INFO,
-						"GPU: %02d, share found: %u, %08x%08x%08x%08x%08x%08x%08x%08x",
+						"GPU: %02d, share validated: %u, %08x%08x%08x%08x%08x%08x%08x%08x",
 						thr_id, nonce, hash[7], hash[6], hash[5], hash[4], hash[3],
 						hash[2], hash[1], hash[0]);
 				shares_found++;
 		    }
+		    else
+				applog(LOG_INFO,
+						"GPU: %02d, share non valid: %u, %08x%08x%08x%08x%08x%08x%08x%08x",
+						thr_id, nonce, hash[7], hash[6], hash[5], hash[4], hash[3],
+						hash[2], hash[1], hash[0]);
 		    if(hash[7] <= Htarg && fulltest(hash, ptarget)) {
 				applog(LOG_INFO,
 						"GPU: %02d, block found: %u, %08x%08x%08x%08x%08x%08x%08x%08x",
@@ -387,7 +401,7 @@ int scanhash_dcrypt_gpu(int thr_id, uint32_t *pdata, unsigned char *digest,
 // CPU optimized version
 int scanhash_dcrypt_opt(int thr_id, uint32_t *pdata, unsigned char *digest,
 		const uint32_t *ptarget, uint32_t max_nonce, unsigned long *hashes_done,
-		unsigned long *hashes_skipped) {
+		unsigned long *hashes_checked) {
 	uint32_t block[20], hash[8], hash2[8];
 	uint32_t nNonce = pdata[19] - 1;
 	const uint32_t first_nonce = pdata[19];
@@ -405,16 +419,18 @@ int scanhash_dcrypt_opt(int thr_id, uint32_t *pdata, unsigned char *digest,
 		block[19] = ++nNonce;
 
 		if (dcrypt_opt((u8int*) block, 80, digest, hash, new_hash) > 0) {
+			*hashes_checked += 1;
 		    if(hash[7] <= target) {
-				applog(LOG_INFO,
-						"GPU: %02d, share found: %u, %08x%08x%08x%08x%08x%08x%08x%08x",
-						thr_id, nNonce, hash[7], hash[6], hash[5], hash[4], hash[3],
-						hash[2], hash[1], hash[0]);
 				shares_found++;
 				dcrypt((u8int*) block, 80, digest2, hash2);
-				if (hash2[7] > target)
+				if (hash2[7] <= target)
 					applog(LOG_INFO,
-							"GPU: %02d, share check failed: %u, %08x%08x%08x%08x%08x%08x%08x%08x",
+							"GPU: %02d, share validated: %u, %08x%08x%08x%08x%08x%08x%08x%08x",
+							thr_id, nNonce, hash[7], hash[6], hash[5], hash[4], hash[3],
+							hash[2], hash[1], hash[0]);
+				else
+					applog(LOG_INFO,
+							"GPU: %02d, share non valid: %u, %08x%08x%08x%08x%08x%08x%08x%08x",
 							thr_id, nNonce, hash2[7], hash2[6], hash2[5], hash2[4], hash2[3],
 							hash2[2], hash2[1], hash2[0]);
 		    }
@@ -425,8 +441,7 @@ int scanhash_dcrypt_opt(int thr_id, uint32_t *pdata, unsigned char *digest,
 				//found a hash!
 				return 1;
 			}
-		} else
-			*hashes_skipped += 1;
+		}
 	} while (nNonce < max_nonce && !work_restart[thr_id].restart);
 	*hashes_done = nNonce - pdata[19] + 1;
 	pdata[19] = nNonce;
